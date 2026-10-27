@@ -20,7 +20,7 @@ mod caret;
 mod editing;
 mod formatting;
 mod ime;
-mod layout;
+pub mod layout;
 
 use autocorrect::autocorrect_options;
 pub use autocorrect::{AUTOCORRECT, AutoList, correct_word};

@@ -1,0 +1,23 @@
+[package]
+name = "deckcraft-wasm"
+description = "DeckCraft's engine as a headless wasm module: JSON commands, pointer events, rendering and overlay data for a host UI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+deckcraft-engine = { workspace = true }
+deckcraft-model = { workspace = true }
+deckcraft-render = { workspace = true }
+deckcraft-geom = { workspace = true }
+deckcraft-text = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+wasm-bindgen = "0.2"
