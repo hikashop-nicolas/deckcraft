@@ -83,6 +83,13 @@ impl Deck {
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
+    /// Picks the pointer tool: `{"kind":"select"}`, `{"kind":"shape","preset":"rect"}`, `{"kind":"textBox"}` or an ink tool.
+    pub fn set_tool(&mut self, tool: &str) -> Result<(), JsError> {
+        let kind: deckcraft_engine::tools::ToolKind = serde_json::from_str(tool).map_err(js)?;
+        self.session.set_tool(kind);
+        Ok(())
+    }
+
     /// A pointer event (see the engine's `PointerEvent`) in slide points; what the tool did.
     pub fn pointer(&mut self, event: &str) -> Result<String, JsError> {
         let ev: PointerEvent = serde_json::from_str(event).map_err(js)?;
