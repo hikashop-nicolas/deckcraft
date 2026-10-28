@@ -193,6 +193,9 @@ fn fill_triangle(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [f64;
     }
     let edge = |a: [f64; 2], b: [f64; 2], x: f64, y: f64| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
     let width = out.width as usize;
+    if fill_axis_aligned(out, p, uv, al, tex, area, (minx, maxx, miny, maxy)) {
+        return;
+    }
     for y in miny..maxy {
         // Sample a hair off the pixel centre so a point on an edge shared by two triangles falls
         // in exactly one of them (no double-blended seams).
@@ -222,6 +225,89 @@ fn fill_triangle(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [f64;
             }
         }
     }
+}
+
+/// The common triangle of a transition: texels map one to one onto pixels (no scaling or rotation), so every row is a run of
+/// pixels sharing one pair of texture columns and one blend. Returns false for any other mapping.
+fn fill_axis_aligned(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [f64; 3], tex: &Tex, area: f64, bounds: (i64, i64, i64, i64)) -> bool {
+    let (iw, ih) = match tex {
+        Tex::Image(i) => (i.width as usize, i.height as usize),
+        Tex::Solid(_) => (1, 1),
+    };
+    if iw == 0 || ih == 0 {
+        return false;
+    }
+    let (minx, maxx, miny, maxy) = bounds;
+    // the weights' gradients: w0 over edge (p1,p2), w1 over (p2,p0), w2 over (p0,p1)
+    let dx = [-(p[2][1] - p[1][1]) / area, -(p[0][1] - p[2][1]) / area, -(p[1][1] - p[0][1]) / area];
+    let dy = [(p[2][0] - p[1][0]) / area, (p[0][0] - p[2][0]) / area, (p[1][0] - p[0][0]) / area];
+    let lin = |v: [f64; 3], d: [f64; 3]| v[0] * d[0] + v[1] * d[1] + v[2] * d[2];
+    let (u, v) = ([uv[0][0], uv[1][0], uv[2][0]], [uv[0][1], uv[1][1], uv[2][1]]);
+    if matches!(tex, Tex::Image(_)) {
+        let (dudx, dudy, dvdx, dvdy) = (lin(u, dx) * iw as f64, lin(u, dy) * iw as f64, lin(v, dx) * ih as f64, lin(v, dy) * ih as f64);
+        if (dudx - 1.0).abs() > 1e-6 || dudy.abs() > 1e-6 || dvdx.abs() > 1e-6 || (dvdy - 1.0).abs() > 1e-6 {
+            return false;
+        }
+    }
+    let (dalx, daly) = (lin(al, dx), lin(al, dy));
+    let edge = |a: [f64; 2], b: [f64; 2], x: f64, y: f64| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+    let width = out.width as usize;
+    let (fx0, fy0) = (minx as f64 + 0.5 + 1.17e-6, miny as f64 + 0.5 + 2.31e-6);
+    let w_at = |x: f64, y: f64| [edge(p[1], p[2], x, y) / area, edge(p[2], p[0], x, y) / area, edge(p[0], p[1], x, y) / area];
+    let origin = w_at(fx0, fy0);
+    // texel position of the first pixel: whole part picks the texels, fraction is the same for every pixel
+    let (tx0, ty0) = (lin(u, origin) * iw as f64 - 0.5, lin(v, origin) * ih as f64 - 0.5);
+    let (cx, cy) = (tx0 - minx as f64, ty0 - miny as f64);
+    let (ix, fx) = (cx.floor(), (cx - cx.floor()) as f32);
+    let (ixi, iyi) = (ix as i64, cy.floor() as i64);
+    let fy = (cy - cy.floor()) as f32;
+    let (wm, hm) = (iw as i64 - 1, ih as i64 - 1);
+    let alpha0 = lin(al, origin);
+    for y in miny..maxy {
+        let ry = (y - miny) as f64;
+        let mut w = [origin[0] + dy[0] * ry, origin[1] + dy[1] * ry, origin[2] + dy[2] * ry];
+        let mut alpha = alpha0 + daly * ry;
+        let (y0, y1) = ((y + iyi).clamp(0, hm) as usize, (y + iyi + 1).clamp(0, hm) as usize);
+        for x in minx..maxx {
+            if w[0] >= 0.0 && w[1] >= 0.0 && w[2] >= 0.0 && alpha > 0.0 {
+                let sample = match tex {
+                    Tex::Solid(c) => [c[0], c[1], c[2], 255.0],
+                    Tex::Image(img) => {
+                        let (x0, x1) = ((x + ixi).clamp(0, wm) as usize, (x + ixi + 1).clamp(0, wm) as usize);
+                        let px = |xx: usize, yy: usize| -> [f32; 4] {
+                            let i = (yy * iw + xx) * 4;
+                            match img.pixels.get(i..i + 4) {
+                                Some(q) => [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
+                                None => [0.0; 4],
+                            }
+                        };
+                        let (a, b, c, d) = (px(x0, y0), px(x1, y0), px(x0, y1), px(x1, y1));
+                        let mut o = [0.0f32; 4];
+                        for k in 0..4 {
+                            let top = a[k] + (b[k] - a[k]) * fx;
+                            let bot = c[k] + (d[k] - c[k]) * fx;
+                            o[k] = top + (bot - top) * fy;
+                        }
+                        o
+                    }
+                };
+                let i = (y as usize * width + x as usize) * 4;
+                if let Some(d) = out.pixels.get_mut(i..i + 4) {
+                    let al = alpha as f32;
+                    let sa = sample[3] * al / 255.0;
+                    for k in 0..4 {
+                        let val = sample[k] * al + d[k] as f32 * (1.0 - sa);
+                        d[k] = val.round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+            w[0] += dx[0];
+            w[1] += dx[1];
+            w[2] += dx[2];
+            alpha += dalx;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
