@@ -13,6 +13,17 @@ fn js(e: impl std::fmt::Display) -> JsError {
 #[wasm_bindgen]
 pub struct Deck {
     session: Session,
+    trans: std::cell::RefCell<Option<TransitionCache>>,
+}
+
+/// The two slides of a transition, drawn once, so that each frame only composites them.
+struct TransitionCache {
+    old: Option<deckcraft_render::Image>,
+    new: deckcraft_render::Image,
+    parts: Option<deckcraft_render::SlideParts>,
+    kind: String,
+    option: String,
+    aspect: f64,
 }
 
 /// A rendered slide: straight RGBA8 pixels.
@@ -42,7 +53,7 @@ impl Rendered {
 impl Deck {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Deck {
-        Deck { session: Session::new() }
+        Deck { session: Session::new(), trans: std::cell::RefCell::new(None) }
     }
 
     /// The ids and parameters of every command, one JSON array.
@@ -141,6 +152,37 @@ impl Deck {
         let state = |id: deckcraft_model::ShapeId| shape_state(&tl, id, step, t, &plays, &stamps);
         let opts = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), state: Some(&state), ..Default::default() };
         let img = deckcraft_render::render_slide(&st.doc, index, &opts);
+        Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
+    }
+
+    /// Draws the slides of slide `index`'s transition once; [`Deck::transition_frame`] then gives the frames quickly. False
+    /// for a transition drawn shape by shape (morph), which only [`Deck::render_transition`] can give.
+    pub fn transition_begin(&self, index: usize, scale: f64) -> Result<bool, JsError> {
+        let st = self.session.doc().map_err(js)?;
+        let slide = st.doc.slides.get(index).ok_or_else(|| JsError::new("no such slide"))?;
+        let plain = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), ..Default::default() };
+        let (kind, option) = slide.transition.as_ref().map(|tr| (tr.kind.clone(), tr.option.clone())).unwrap_or(("none".into(), String::new()));
+        if kind == "morph" {
+            *self.trans.borrow_mut() = None;
+            return Ok(false);
+        }
+        let tl = deckcraft_anim::Timeline::new(slide, st.doc.slide_size.width, st.doc.slide_size.height);
+        let state = |id: deckcraft_model::ShapeId| shape_state(&tl, id, 0, 0.0, &[], &[]);
+        let fresh = deckcraft_render::RenderOpts { scale: plain.scale, state: Some(&state), ..Default::default() };
+        let new = deckcraft_render::render_slide(&st.doc, index, &fresh);
+        let prev = index.checked_sub(1).filter(|i| st.doc.slides.get(*i).is_some());
+        let old = prev.map(|i| deckcraft_render::render_slide(&st.doc, i, &plain));
+        let parts = deckcraft_render::uses_slide_parts(&kind, &option).then(|| deckcraft_render::SlideParts::render(&st.doc, prev, index, &plain));
+        let aspect = st.doc.slide_size.width / st.doc.slide_size.height.max(1.0);
+        *self.trans.borrow_mut() = Some(TransitionCache { old, new, parts, kind, option, aspect });
+        Ok(true)
+    }
+
+    /// One frame (progress `t`, 0 to 1) of the transition prepared by [`Deck::transition_begin`].
+    pub fn transition_frame(&self, t: f64) -> Result<Rendered, JsError> {
+        let cache = self.trans.borrow();
+        let c = cache.as_ref().ok_or_else(|| JsError::new("no transition prepared"))?;
+        let img = deckcraft_render::composite_transition(c.old.as_ref(), &c.new, c.parts.as_ref(), &deckcraft_render::transition_frame(&c.kind, &c.option, t.clamp(0.0, 1.0), c.aspect));
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
