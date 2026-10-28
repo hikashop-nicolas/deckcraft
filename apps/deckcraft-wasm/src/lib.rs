@@ -223,8 +223,23 @@ fn overlay(s: &Session) -> Value {
             })
         })
         .collect();
+    // The selected table cells as one box (slide points): [x, y, w, h].
+    let cells = st.selection.cells.and_then(|(id, (r0, c0), (r1, c1))| {
+        let sh = st.shape(id)?;
+        let deckcraft_model::ShapeKind::Table(t) = &sh.kind else { return None };
+        let x = deckcraft_engine::cmd::xfrm_of(&st.doc, &st.selection, sh);
+        let heights = deckcraft_engine::cmd::table_drawn_heights(&st.doc, &st.selection, t);
+        let (ra, rb) = (r0.min(r1), r0.max(r1));
+        let (ca, cb) = (c0.min(c1), c0.max(c1));
+        let left = x.x + t.cols.iter().take(ca).sum::<f64>();
+        let top = x.y + heights.iter().take(ra).sum::<f64>();
+        let w = t.cols.iter().skip(ca).take(cb - ca + 1).sum::<f64>();
+        let h = heights.iter().skip(ra).take(rb - ra + 1).sum::<f64>();
+        Some(json!([left, top, w, h]))
+    });
     json!({
         "open": true,
+        "cells": cells,
         "target": serde_json::to_value(st.selection.target).unwrap_or_default(),
         "title": st.title(),
         "dirty": st.is_dirty(),
