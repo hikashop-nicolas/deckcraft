@@ -138,55 +138,33 @@ impl Deck {
             .collect();
         let stamps: Vec<deckcraft_anim::StepStamp> =
             plays.iter().enumerate().map(|(i, p)| deckcraft_anim::StepStamp { trigger: p.trigger, step: p.step, at: i as u64 }).collect();
-        let state = |id: deckcraft_model::ShapeId| {
-            let a = tl.state_ordered(id, None, step, t, &plays, &stamps);
-            deckcraft_render::ShapeState {
-                visible: a.visible,
-                opacity: a.opacity,
-                offset: deckcraft_geom::Vec2::new(a.offset_x, a.offset_y),
-                scale: (a.scale_x, a.scale_y),
-                rotate: a.rotate,
-                clip: a.clip,
-                tint: a.tint,
-                paras: tl
-                    .paragraph_targets(id)
-                    .into_iter()
-                    .map(|p| {
-                        let a = tl.state(id, Some(p), step, t);
-                        (p, deckcraft_render::ParaState { visible: a.visible, opacity: a.opacity, offset: deckcraft_geom::Vec2::new(a.offset_x, a.offset_y) })
-                    })
-                    .collect(),
-            }
-        };
+        let state = |id: deckcraft_model::ShapeId| shape_state(&tl, id, step, t, &plays, &stamps);
         let opts = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), state: Some(&state), ..Default::default() };
         let img = deckcraft_render::render_slide(&st.doc, index, &opts);
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
-    /// The frame of slide `index`'s transition at progress `t` (0 to 1): the previous slide going out, this one coming in.
+    /// The frame of slide `index`'s transition at progress `t` (0 to 1): the previous slide, as it was left, going out, and this
+    /// one coming in with its animations not yet played.
     pub fn render_transition(&self, index: usize, t: f64, scale: f64) -> Result<Rendered, JsError> {
         let st = self.session.doc().map_err(js)?;
-        let opts = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), ..Default::default() };
-        let img = deckcraft_render::render_transition(&st.doc, index, t, &opts);
-        Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
-    }
-
-    /// The presentation as a PDF (`params` as for `file.export` with `format: "pdf"`: layout, perPage, slides, ...).
-    pub fn export_pdf(&self, params: &str) -> Result<Vec<u8>, JsError> {
-        let p: Value = serde_json::from_str(params).map_err(js)?;
-        let st = self.session.doc().map_err(js)?;
-        deckcraft_engine::cmd::file::pdf_bytes(&st.doc, &p).map_err(js)
-    }
-
-    /// Slide `index` as a PNG at `scale` pixels per point.
-    pub fn export_png(&self, index: usize, scale: f64) -> Result<Vec<u8>, JsError> {
-        let st = self.session.doc().map_err(js)?;
-        if index >= st.doc.slides.len() {
-            return Err(JsError::new("no such slide"));
+        let slide = st.doc.slides.get(index).ok_or_else(|| JsError::new("no such slide"))?;
+        let plain = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), ..Default::default() };
+        let (kind, option) = slide.transition.as_ref().map(|tr| (tr.kind.clone(), tr.option.clone())).unwrap_or(("none".into(), String::new()));
+        if kind == "morph" {
+            let img = deckcraft_render::render_transition(&st.doc, index, t, &plain);
+            return Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() });
         }
-        let scale = deckcraft_engine::cmd::file::image_scale(&st.doc, scale);
-        let img = deckcraft_render::render_slide(&st.doc, index, &deckcraft_render::RenderOpts { scale, ..Default::default() });
-        Ok(img.to_png_at(deckcraft_render::dpi_for_scale(scale)))
+        let tl = deckcraft_anim::Timeline::new(slide, st.doc.slide_size.width, st.doc.slide_size.height);
+        let state = |id: deckcraft_model::ShapeId| shape_state(&tl, id, 0, 0.0, &[], &[]);
+        let fresh = deckcraft_render::RenderOpts { scale: plain.scale, state: Some(&state), ..Default::default() };
+        let new = deckcraft_render::render_slide(&st.doc, index, &fresh);
+        let prev = index.checked_sub(1).filter(|i| st.doc.slides.get(*i).is_some());
+        let old = prev.map(|i| deckcraft_render::render_slide(&st.doc, i, &plain));
+        let parts = deckcraft_render::uses_slide_parts(&kind, &option).then(|| deckcraft_render::SlideParts::render(&st.doc, prev, index, &plain));
+        let aspect = st.doc.slide_size.width / st.doc.slide_size.height.max(1.0);
+        let img = deckcraft_render::composite_transition(old.as_ref(), &new, parts.as_ref(), &deckcraft_render::transition_frame(&kind, &option, t, aspect));
+        Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
     /// Picks the pointer tool: `{"kind":"select"}`, `{"kind":"shape","preset":"rect"}`, `{"kind":"textBox"}` or an ink tool.
@@ -211,6 +189,28 @@ impl Deck {
     /// the text being edited (caret, selected text) and the document's state.
     pub fn overlay(&self) -> String {
         overlay(&self.session).to_string()
+    }
+}
+
+
+fn shape_state(tl: &deckcraft_anim::Timeline, id: deckcraft_model::ShapeId, step: usize, t: f64, plays: &[deckcraft_anim::TriggerPlay], stamps: &[deckcraft_anim::StepStamp]) -> deckcraft_render::ShapeState {
+    let a = tl.state_ordered(id, None, step, t, plays, stamps);
+    deckcraft_render::ShapeState {
+        visible: a.visible,
+        opacity: a.opacity,
+        offset: deckcraft_geom::Vec2::new(a.offset_x, a.offset_y),
+        scale: (a.scale_x, a.scale_y),
+        rotate: a.rotate,
+        clip: a.clip,
+        tint: a.tint,
+        paras: tl
+            .paragraph_targets(id)
+            .into_iter()
+            .map(|p| {
+                let a = tl.state(id, Some(p), step, t);
+                (p, deckcraft_render::ParaState { visible: a.visible, opacity: a.opacity, offset: deckcraft_geom::Vec2::new(a.offset_x, a.offset_y) })
+            })
+            .collect(),
     }
 }
 
