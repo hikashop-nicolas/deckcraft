@@ -787,6 +787,28 @@ fn master_xml(x: &mut Exp, o: &mut Out, m: &Master, layouts: &[(u64, String)]) -
     w.finish()
 }
 
+/// The slide's animations plus, for each autoplay audio or video that has no media effect, a Play that starts by itself
+/// (PowerPoint keeps autoplay as that effect).
+fn with_autoplay(s: &deckcraft_model::Slide) -> Vec<deckcraft_model::Animation> {
+    let mut auto = vec![];
+    deckcraft_model::walk(&s.shapes, &mut |sh, _| {
+        let deckcraft_model::ShapeKind::Media(m) = &sh.kind else { return };
+        let has = s.animations.iter().any(|a| a.shape == sh.id && a.class == deckcraft_model::AnimClass::Media);
+        if m.autoplay && !has {
+            auto.push(deckcraft_model::Animation {
+                shape: sh.id,
+                class: deckcraft_model::AnimClass::Media,
+                effect: "play".into(),
+                start: deckcraft_model::AnimStart::AfterPrevious,
+                duration_ms: 1,
+                ..Default::default()
+            });
+        }
+    });
+    auto.extend(s.animations.iter().cloned());
+    auto
+}
+
 fn slide_xml(x: &mut Exp, o: &mut Out, s: &Slide, comment_rel: Option<&str>) -> Vec<u8> {
     let mut w = W::new();
     root_open(&mut w, "p:sld", A::new().o("showMasterSp", (!s.show_master_shapes).then_some("0")).o("show", s.hidden.then_some("0")));
@@ -795,8 +817,9 @@ fn slide_xml(x: &mut Exp, o: &mut Out, s: &Slide, comment_rel: Option<&str>) -> 
     if let Some(t) = &s.transition {
         timing::transition(&mut w, x, o, t);
     }
-    if !s.animations.is_empty() {
-        timing::timing(&mut w, x, &s.animations, &s.shapes, &ids);
+    let anims = with_autoplay(s);
+    if !anims.is_empty() {
+        timing::timing(&mut w, x, &anims, &s.shapes, &ids);
     }
     slide_ext_list(&mut w, s.raw_ext.as_deref(), comment_rel);
     w.close("p:sld");

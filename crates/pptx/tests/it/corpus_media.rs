@@ -99,6 +99,7 @@ fn corpus() -> (Presentation, Vec<u8>, Vec<u8>, Vec<u8>) {
         trim_end_ms: 9000,
         bookmarks: vec![("Mark".into(), 1500)],
         volume: 1.0,
+        autoplay: true,
         ..Default::default()
     });
     let mut trigger = shape(&mut p, "Trigger", 40.0, 240.0, 100.0, 36.0);
@@ -256,6 +257,10 @@ fn object_corpus_round_trips() {
         assert_ink(by_name(q, "Sketch"));
 
         let timing = q.slides.iter().find(|s| s.animations.iter().any(|a| a.effect == "fade")).expect("timing slide");
+        let film = timing.shapes.iter().find(|s| s.name == "Film").expect("film");
+        let narration = timing.shapes.iter().find(|s| s.name == "Narration").expect("narration");
+        assert!(matches!(&film.kind, ShapeKind::Media(m) if m.autoplay), "autoplay survives as a Play that starts by itself");
+        assert!(matches!(&narration.kind, ShapeKind::Media(m) if !m.autoplay));
         let fade = timing.animations.iter().find(|a| a.effect == "fade").expect("fade");
         let pulse = timing.animations.iter().find(|a| a.effect == "pulse").expect("pulse");
         assert_eq!(fade.repeat, 4);

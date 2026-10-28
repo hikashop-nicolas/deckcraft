@@ -111,5 +111,38 @@ pub(super) fn media_options(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(())
     })?;
+    if bool_param(p, "autoplay") == Some(false) {
+        stop_autoplay_effects(s)?;
+    }
     Ok(json!({}))
+}
+
+/// An audio or video that no longer autoplays loses the Play effect that starts it by itself (a file keeps autoplay as that effect).
+fn stop_autoplay_effects(s: &mut Session) -> Result<()> {
+    use deckcraft_model::{AnimClass, AnimStart, Animation, ShapeKind, Slide};
+    let stale = |sl: &Slide, a: &Animation| {
+        a.class == AnimClass::Media
+            && a.effect == "play"
+            && a.start != AnimStart::OnClick
+            && a.trigger.is_none()
+            && deckcraft_model::find_shape(&sl.shapes, a.shape).is_some_and(|sh| matches!(&sh.kind, ShapeKind::Media(m) if !m.autoplay))
+    };
+    if !s.doc()?.doc.slides.iter().any(|sl| sl.animations.iter().any(|a| stale(sl, a))) {
+        return Ok(());
+    }
+    s.edit(|doc, _| {
+        for sl in doc.slides.iter_mut() {
+            let keep: Vec<bool> = sl.animations.iter().map(|a| !stale(sl, a)).collect();
+            if keep.iter().all(|k| *k) {
+                continue;
+            }
+            let mut i = 0;
+            std::sync::Arc::make_mut(sl).animations.retain(|_| {
+                i += 1;
+                keep[i - 1]
+            });
+        }
+        Ok(())
+    })?;
+    Ok(())
 }

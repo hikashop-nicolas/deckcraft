@@ -1133,11 +1133,29 @@ fn read_slide(imp: &mut Imp, part: &Part, doc: &Doc, id: SlideId, layout: Layout
     }
     if let Some(t) = root.child("timing") {
         s.animations = timing::animations(imp, part, &ctx, t, &s.shapes);
+        autoplay_from_effects(&mut s);
     }
     if let Some(ext) = root.child("extLst").filter(|e| !has_rel_refs(e)) {
         s.raw_ext = Some(ext.elements().map(|e| part.keep(e)).collect());
     }
     s
+}
+
+/// A media Play that starts by itself is the file's way of saying the audio or video autoplays.
+fn autoplay_from_effects(s: &mut deckcraft_model::Slide) {
+    let ids: Vec<deckcraft_model::ShapeId> = s
+        .animations
+        .iter()
+        .filter(|a| a.class == deckcraft_model::AnimClass::Media && a.effect == "play" && a.start != deckcraft_model::AnimStart::OnClick && a.trigger.is_none())
+        .map(|a| a.shape)
+        .collect();
+    for id in ids {
+        if let Some(sh) = deckcraft_model::find_shape_mut(&mut s.shapes, id)
+            && let deckcraft_model::ShapeKind::Media(m) = &mut sh.kind
+        {
+            m.autoplay = true;
+        }
+    }
 }
 
 fn read_notes(imp: &mut Imp, part: &Part, root: &El) -> TextBody {
