@@ -112,16 +112,34 @@ impl Deck {
         let slide = st.doc.slides.get(index).ok_or_else(|| JsError::new("no such slide"))?;
         let tl = deckcraft_anim::Timeline::new(slide, st.doc.slide_size.width, st.doc.slide_size.height);
         let n = tl.steps();
-        Ok(json!({"steps": n, "auto": (0..n).map(|i| tl.step_is_auto(i)).collect::<Vec<_>>(), "durations": (0..n).map(|i| tl.step_duration(i)).collect::<Vec<_>>()}).to_string())
+        let triggers: Vec<Value> = tl
+            .trigger_shapes()
+            .into_iter()
+            .map(|id| json!({"shape": id, "steps": tl.trigger_steps(id), "durations": (0..tl.trigger_steps(id)).map(|i| tl.trigger_step_duration(id, i)).collect::<Vec<_>>()}))
+            .collect();
+        Ok(json!({"steps": n, "auto": (0..n).map(|i| tl.step_is_auto(i)).collect::<Vec<_>>(), "durations": (0..n).map(|i| tl.step_duration(i)).collect::<Vec<_>>(), "triggers": triggers}).to_string())
     }
 
     /// Slide `index` with its animations at main step `step`, `t` seconds into it (`step` past the last step: all built).
     pub fn render_step(&self, index: usize, step: usize, t: f64, scale: f64) -> Result<Rendered, JsError> {
+        self.render_show(index, step, t, "[]", scale)
+    }
+
+    /// [`Deck::render_step`] with the triggered sequences' playheads: `[{"trigger": id, "step": n, "t": seconds}]` in the
+    /// order their steps were started.
+    pub fn render_show(&self, index: usize, step: usize, t: f64, plays: &str, scale: f64) -> Result<Rendered, JsError> {
         let st = self.session.doc().map_err(js)?;
         let slide = st.doc.slides.get(index).ok_or_else(|| JsError::new("no such slide"))?;
         let tl = deckcraft_anim::Timeline::new(slide, st.doc.slide_size.width, st.doc.slide_size.height);
+        let list: Vec<Value> = serde_json::from_str(plays).unwrap_or_default();
+        let plays: Vec<deckcraft_anim::TriggerPlay> = list
+            .iter()
+            .filter_map(|p| Some(deckcraft_anim::TriggerPlay { trigger: deckcraft_model::ShapeId(p.get("trigger")?.as_u64()? as u32), step: p.get("step")?.as_u64()? as usize, t: p.get("t")?.as_f64()? }))
+            .collect();
+        let stamps: Vec<deckcraft_anim::StepStamp> =
+            plays.iter().enumerate().map(|(i, p)| deckcraft_anim::StepStamp { trigger: p.trigger, step: p.step, at: i as u64 }).collect();
         let state = |id: deckcraft_model::ShapeId| {
-            let a = tl.state(id, None, step, t);
+            let a = tl.state_ordered(id, None, step, t, &plays, &stamps);
             deckcraft_render::ShapeState {
                 visible: a.visible,
                 opacity: a.opacity,
