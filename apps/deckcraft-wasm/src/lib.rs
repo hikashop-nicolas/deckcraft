@@ -167,6 +167,24 @@ impl Deck {
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
+    /// The presentation as a PDF (`params` as for `file.export` with `format: "pdf"`: layout, perPage, slides, ...).
+    pub fn export_pdf(&self, params: &str) -> Result<Vec<u8>, JsError> {
+        let p: Value = serde_json::from_str(params).map_err(js)?;
+        let st = self.session.doc().map_err(js)?;
+        deckcraft_engine::cmd::file::pdf_bytes(&st.doc, &p).map_err(js)
+    }
+
+    /// Slide `index` as a PNG at `scale` pixels per point.
+    pub fn export_png(&self, index: usize, scale: f64) -> Result<Vec<u8>, JsError> {
+        let st = self.session.doc().map_err(js)?;
+        if index >= st.doc.slides.len() {
+            return Err(JsError::new("no such slide"));
+        }
+        let scale = deckcraft_engine::cmd::file::image_scale(&st.doc, scale);
+        let img = deckcraft_render::render_slide(&st.doc, index, &deckcraft_render::RenderOpts { scale, ..Default::default() });
+        Ok(img.to_png_at(deckcraft_render::dpi_for_scale(scale)))
+    }
+
     /// Picks the pointer tool: `{"kind":"select"}`, `{"kind":"shape","preset":"rect"}`, `{"kind":"textBox"}` or an ink tool.
     pub fn set_tool(&mut self, tool: &str) -> Result<(), JsError> {
         let kind: deckcraft_engine::tools::ToolKind = serde_json::from_str(tool).map_err(js)?;
