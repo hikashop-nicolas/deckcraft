@@ -79,7 +79,26 @@ impl Deck {
     pub fn render(&self, index: usize, scale: f64, edit: bool) -> Result<Rendered, JsError> {
         let st = self.session.doc().map_err(js)?;
         let opts = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), edit, ..Default::default() };
-        let img = deckcraft_render::render_slide(&st.doc, index, &opts);
+        let img = match st.selection.target {
+            deckcraft_engine::Target::Master { master } => deckcraft_render::render_layout(&st.doc, master, None, &opts),
+            deckcraft_engine::Target::Layout { master, layout } => deckcraft_render::render_layout(&st.doc, master, Some(layout), &opts),
+            _ => deckcraft_render::render_slide(&st.doc, index, &opts),
+        };
+        Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
+    }
+
+    /// The masters and their layouts: `[{"name", "layouts": [{"name"}]}]`.
+    pub fn masters(&self) -> Result<String, JsError> {
+        let st = self.session.doc().map_err(js)?;
+        let v: Vec<Value> = st.doc.masters.iter().map(|m| json!({"name": m.name, "layouts": m.layouts.iter().map(|l| json!({"name": l.name})).collect::<Vec<_>>()})).collect();
+        Ok(Value::Array(v).to_string())
+    }
+
+    /// A layout (`layout` below zero: the master itself) as a picture, for the Slide Master view's strip.
+    pub fn render_layout(&self, master: usize, layout: i32, scale: f64) -> Result<Rendered, JsError> {
+        let st = self.session.doc().map_err(js)?;
+        let opts = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), ..Default::default() };
+        let img = deckcraft_render::render_layout(&st.doc, master, usize::try_from(layout).ok(), &opts);
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
@@ -206,6 +225,7 @@ fn overlay(s: &Session) -> Value {
         .collect();
     json!({
         "open": true,
+        "target": serde_json::to_value(st.selection.target).unwrap_or_default(),
         "title": st.title(),
         "dirty": st.is_dirty(),
         "revision": st.revision,
