@@ -227,6 +227,13 @@ fn fill_triangle(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [f64;
     }
 }
 
+fn x_next(w: &mut [f64; 3], dx: &[f64; 3], alpha: &mut f64, dalx: f64) {
+    w[0] += dx[0];
+    w[1] += dx[1];
+    w[2] += dx[2];
+    *alpha += dalx;
+}
+
 /// The common triangle of a transition: texels map one to one onto pixels (no scaling or rotation), so every row is a run of
 /// pixels sharing one pair of texture columns and one blend. Returns false for any other mapping.
 fn fill_axis_aligned(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [f64; 3], tex: &Tex, area: f64, bounds: (i64, i64, i64, i64)) -> bool {
@@ -258,10 +265,10 @@ fn fill_axis_aligned(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [
     // texel position of the first pixel: whole part picks the texels, fraction is the same for every pixel
     let (tx0, ty0) = (lin(u, origin) * iw as f64 - 0.5, lin(v, origin) * ih as f64 - 0.5);
     let (cx, cy) = (tx0 - minx as f64, ty0 - miny as f64);
-    let (ix, fx) = (cx.floor(), (cx - cx.floor()) as f32);
-    let (ixi, iyi) = (ix as i64, cy.floor() as i64);
-    let fy = (cy - cy.floor()) as f32;
+    let split = |c: f64| if (c - c.round()).abs() < 1e-4 { (c.round() as i64, 0.0f32) } else { (c.floor() as i64, (c - c.floor()) as f32) };
+    let ((ixi, fx), (iyi, fy)) = (split(cx), split(cy));
     let (wm, hm) = (iw as i64 - 1, ih as i64 - 1);
+    let whole = fx == 0.0 && fy == 0.0;
     let alpha0 = lin(al, origin);
     for y in miny..maxy {
         let ry = (y - miny) as f64;
@@ -272,6 +279,13 @@ fn fill_axis_aligned(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [
             if w[0] >= 0.0 && w[1] >= 0.0 && w[2] >= 0.0 && alpha > 0.0 {
                 let sample = match tex {
                     Tex::Solid(c) => [c[0], c[1], c[2], 255.0],
+                    Tex::Image(img) if whole => {
+                        let (x0, y0) = ((x + ixi).clamp(0, wm) as usize, y0);
+                        match img.pixels.get((y0 * iw + x0) * 4..(y0 * iw + x0) * 4 + 4) {
+                            Some(q) => [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
+                            None => [0.0; 4],
+                        }
+                    }
                     Tex::Image(img) => {
                         let (x0, x1) = ((x + ixi).clamp(0, wm) as usize, (x + ixi + 1).clamp(0, wm) as usize);
                         let px = |xx: usize, yy: usize| -> [f32; 4] {
@@ -294,17 +308,28 @@ fn fill_axis_aligned(out: &mut Image, p: [[f64; 2]; 3], uv: [[f64; 2]; 3], al: [
                 let i = (y as usize * width + x as usize) * 4;
                 if let Some(d) = out.pixels.get_mut(i..i + 4) {
                     let al = alpha as f32;
-                    let sa = sample[3] * al / 255.0;
-                    for k in 0..4 {
-                        let val = sample[k] * al + d[k] as f32 * (1.0 - sa);
-                        d[k] = val.round().clamp(0.0, 255.0) as u8;
+                    if al >= 1.0 && sample[3] >= 255.0 {
+                        for k in 0..4 {
+                            d[k] = sample[k].round().clamp(0.0, 255.0) as u8;
+                        }
+                        x_next(&mut w, &dx, &mut alpha, dalx);
+                        continue;
+                    }
+                    if sample[3] >= 255.0 {
+                        let a = (al * 256.0) as u32;
+                        for k in 0..4 {
+                            d[k] = ((sample[k] as u32 * a + d[k] as u32 * (256 - a.min(256))) >> 8) as u8;
+                        }
+                    } else {
+                        let sa = sample[3] * al / 255.0;
+                        for k in 0..4 {
+                            let val = sample[k] * al + d[k] as f32 * (1.0 - sa);
+                            d[k] = val.round().clamp(0.0, 255.0) as u8;
+                        }
                     }
                 }
             }
-            w[0] += dx[0];
-            w[1] += dx[1];
-            w[2] += dx[2];
-            alpha += dalx;
+            x_next(&mut w, &dx, &mut alpha, dalx);
         }
     }
     true
