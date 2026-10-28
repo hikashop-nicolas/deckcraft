@@ -82,6 +82,9 @@ impl Deck {
         let img = match st.selection.target {
             deckcraft_engine::Target::Master { master } => deckcraft_render::render_layout(&st.doc, master, None, &opts),
             deckcraft_engine::Target::Layout { master, layout } => deckcraft_render::render_layout(&st.doc, master, Some(layout), &opts),
+            t @ (deckcraft_engine::Target::Handout | deckcraft_engine::Target::NotesMaster) => deckcraft_engine::master_page(&st.doc, t)
+                .map(|p| deckcraft_render::render_layout(&p, 0, None, &opts))
+                .unwrap_or_default(),
             _ => deckcraft_render::render_slide(&st.doc, index, &opts),
         };
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
