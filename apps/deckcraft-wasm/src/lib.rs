@@ -186,6 +186,65 @@ impl Deck {
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
+    /// The pictures [`Deck::transition_mesh`] draws from, by slot: 0 old, 1 new, 2 old background, 3 new background, 4 old
+    /// contents, 5 new contents. None when the slot is not used.
+    pub fn transition_texture(&self, slot: u32) -> Option<Rendered> {
+        let cache = self.trans.borrow();
+        let c = cache.as_ref()?;
+        let img = match slot {
+            0 => c.old.as_ref(),
+            1 => Some(&c.new),
+            2 => c.parts.as_ref()?.old_back.as_ref(),
+            3 => Some(&c.parts.as_ref()?.new_back),
+            4 => c.parts.as_ref()?.old_content.as_ref(),
+            5 => Some(&c.parts.as_ref()?.new_content),
+            _ => None,
+        }?;
+        Some(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
+    }
+
+    /// The triangles of the transition at progress `t`, for a GPU to draw: per triangle a texture slot (6 black, 7 white, as
+    /// [`Deck::transition_texture`] otherwise) then three vertices of x, y (0 to 1, y down), u, v and opacity.
+    pub fn transition_mesh(&self, t: f64) -> Result<Vec<f32>, JsError> {
+        use deckcraft_anim::Source;
+        let cache = self.trans.borrow();
+        let c = cache.as_ref().ok_or_else(|| JsError::new("no transition prepared"))?;
+        let mut out = Vec::new();
+        for l in deckcraft_render::transition_frame(&c.kind, &c.option, t.clamp(0.0, 1.0), c.aspect) {
+            if !(l.alpha.is_finite() && l.alpha > 0.0) {
+                continue;
+            }
+            let src = match (l.source.is_part(), c.parts.as_ref()) {
+                (true, None) => match l.source.whole() {
+                    Some(s) => s,
+                    None => continue,
+                },
+                _ => l.source,
+            };
+            let slot = match (src, c.parts.as_ref()) {
+                (Source::Old, _) => if c.old.is_some() { 0.0 } else { 6.0 },
+                (Source::New, _) => 1.0,
+                (Source::Black, _) => 6.0,
+                (Source::White, _) => 7.0,
+                (Source::OldBack, Some(p)) => if p.old_back.is_some() { 2.0 } else { 6.0 },
+                (Source::NewBack, Some(_)) => 3.0,
+                (Source::OldContent, Some(p)) => if p.old_content.is_some() { 4.0 } else { continue },
+                (Source::NewContent, Some(_)) => 5.0,
+                (_, None) => continue,
+            };
+            let (verts, tris) = deckcraft_anim::layer_mesh(&l);
+            for tri in tris {
+                let (Some(a), Some(b), Some(d)) = (verts.get(tri[0] as usize), verts.get(tri[1] as usize), verts.get(tri[2] as usize)) else { continue };
+                out.push(slot);
+                for v in [a, b, d] {
+                    let al = if v.a.is_finite() { v.a.clamp(0.0, 1.0) } else { 0.0 };
+                    out.extend([v.pos[0] as f32, v.pos[1] as f32, v.uv[0] as f32, v.uv[1] as f32, al as f32]);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// The frame of slide `index`'s transition at progress `t` (0 to 1): the previous slide, as it was left, going out, and this
     /// one coming in with its animations not yet played.
     pub fn render_transition(&self, index: usize, t: f64, scale: f64) -> Result<Rendered, JsError> {
