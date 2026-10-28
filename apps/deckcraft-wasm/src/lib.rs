@@ -83,6 +83,54 @@ impl Deck {
         Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
     }
 
+    /// The slide's animation steps for the show: `{"steps": n, "auto": [bool], "durations": [seconds]}`. Step `i` is
+    /// started by a click unless `auto[i]`.
+    pub fn show_info(&self, index: usize) -> Result<String, JsError> {
+        let st = self.session.doc().map_err(js)?;
+        let slide = st.doc.slides.get(index).ok_or_else(|| JsError::new("no such slide"))?;
+        let tl = deckcraft_anim::Timeline::new(slide, st.doc.slide_size.width, st.doc.slide_size.height);
+        let n = tl.steps();
+        Ok(json!({"steps": n, "auto": (0..n).map(|i| tl.step_is_auto(i)).collect::<Vec<_>>(), "durations": (0..n).map(|i| tl.step_duration(i)).collect::<Vec<_>>()}).to_string())
+    }
+
+    /// Slide `index` with its animations at main step `step`, `t` seconds into it (`step` past the last step: all built).
+    pub fn render_step(&self, index: usize, step: usize, t: f64, scale: f64) -> Result<Rendered, JsError> {
+        let st = self.session.doc().map_err(js)?;
+        let slide = st.doc.slides.get(index).ok_or_else(|| JsError::new("no such slide"))?;
+        let tl = deckcraft_anim::Timeline::new(slide, st.doc.slide_size.width, st.doc.slide_size.height);
+        let state = |id: deckcraft_model::ShapeId| {
+            let a = tl.state(id, None, step, t);
+            deckcraft_render::ShapeState {
+                visible: a.visible,
+                opacity: a.opacity,
+                offset: deckcraft_geom::Vec2::new(a.offset_x, a.offset_y),
+                scale: (a.scale_x, a.scale_y),
+                rotate: a.rotate,
+                clip: a.clip,
+                tint: a.tint,
+                paras: tl
+                    .paragraph_targets(id)
+                    .into_iter()
+                    .map(|p| {
+                        let a = tl.state(id, Some(p), step, t);
+                        (p, deckcraft_render::ParaState { visible: a.visible, opacity: a.opacity, offset: deckcraft_geom::Vec2::new(a.offset_x, a.offset_y) })
+                    })
+                    .collect(),
+            }
+        };
+        let opts = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), state: Some(&state), ..Default::default() };
+        let img = deckcraft_render::render_slide(&st.doc, index, &opts);
+        Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
+    }
+
+    /// The frame of slide `index`'s transition at progress `t` (0 to 1): the previous slide going out, this one coming in.
+    pub fn render_transition(&self, index: usize, t: f64, scale: f64) -> Result<Rendered, JsError> {
+        let st = self.session.doc().map_err(js)?;
+        let opts = deckcraft_render::RenderOpts { scale: scale.clamp(0.05, 8.0), ..Default::default() };
+        let img = deckcraft_render::render_transition(&st.doc, index, t, &opts);
+        Ok(Rendered { width: img.width, height: img.height, rgba: img.to_straight() })
+    }
+
     /// Picks the pointer tool: `{"kind":"select"}`, `{"kind":"shape","preset":"rect"}`, `{"kind":"textBox"}` or an ink tool.
     pub fn set_tool(&mut self, tool: &str) -> Result<(), JsError> {
         let kind: deckcraft_engine::tools::ToolKind = serde_json::from_str(tool).map_err(js)?;

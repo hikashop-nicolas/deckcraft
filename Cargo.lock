@@ -1296,6 +1296,7 @@ dependencies = [
 name = "deckcraft-wasm"
 version = "0.11.1"
 dependencies = [
+ "deckcraft-anim",
  "deckcraft-engine",
  "deckcraft-geom",
  "deckcraft-model",
