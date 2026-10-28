@@ -243,6 +243,7 @@ fn overlay(s: &Session) -> Value {
     json!({
         "open": true,
         "cells": cells,
+        "cellRange": st.selection.cells.map(|(_, a, b)| json!([a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)])),
         "target": serde_json::to_value(st.selection.target).unwrap_or_default(),
         "title": st.title(),
         "dirty": st.is_dirty(),
