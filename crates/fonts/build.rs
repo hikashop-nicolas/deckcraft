@@ -43,11 +43,17 @@ impl FontInput {
     }
 }
 
+/// Whether the host brings the Japanese face itself (`CRAFT_FONTS_EXTERNAL_CJK`), so the wasm module leaves it out.
+fn external_cjk() -> bool {
+    std::env::var_os("CRAFT_FONTS_EXTERNAL_CJK").is_some()
+}
+
 /// Read font-input environment and target architecture, write `craft_fonts.rs`, report font-input
 /// failures as warnings unless required, and always fail when the generated file cannot be written.
 fn main() {
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
+    println!("cargo::rerun-if-env-changed=CRAFT_FONTS_EXTERNAL_CJK");
     let mut src = String::from("pub static CRAFT_FONTS: &[CraftFont] = &[\n");
     let dir = std::env::var_os("CRAFT_FONTS_DIR").map(PathBuf::from);
     let required = std::env::var_os("CRAFT_FONTS_REQUIRED").is_some();
@@ -152,6 +158,10 @@ fn manifest(dir: &std::path::Path, manifest: &std::path::Path, wasm: bool) -> Re
         if wasm && !matches!((*family, *style), ("BIZ UDPGothic", "Regular") | ("Inter", "Regular" | "Bold" | "Variable")) {
             continue;
         }
+        // A host that loads the Japanese face itself (`session.addFont`) builds without it: it is the module's biggest data.
+        if wasm && *family == "BIZ UDPGothic" && external_cjk() {
+            continue;
+        }
         let path = dir.join(file).canonicalize().map_err(|e| format!("{file}: {e}"))?;
         println!("cargo::rerun-if-changed={}", path.display());
         let scripts: Vec<String> = scripts.split(',').map(|s| format!("{:?}", s.trim())).collect();
@@ -175,7 +185,7 @@ fn manifest(dir: &std::path::Path, manifest: &std::path::Path, wasm: bool) -> Re
 fn validate_required_faces(faces: &[(String, String)], wasm: bool) -> Result<(), String> {
     let has = |family: &str, style: &str| faces.iter().any(|(f, s)| f == family && s == style);
     let inter = has("Inter", "Variable") || (has("Inter", "Regular") && has("Inter", "Bold"));
-    let biz_regular = has("BIZ UDPGothic", "Regular");
+    let biz_regular = has("BIZ UDPGothic", "Regular") || (wasm && external_cjk());
     let biz_bold = wasm || has("BIZ UDPGothic", "Bold");
     let chinese = wasm || has("LXGW WenKai Lite", "Regular");
     let mut missing = Vec::new();
