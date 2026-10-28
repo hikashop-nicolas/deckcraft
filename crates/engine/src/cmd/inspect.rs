@@ -114,7 +114,18 @@ fn slide(s: &mut Session, p: &Value) -> Result<Value> {
     let i = usize_param(p, "index").unwrap_or(st.selection.slide);
     let sl = st.doc.slides.get(i).ok_or_else(|| bad("slide.inspect", format!("no slide {i}")))?;
     let ctx = Ctx::for_slide(&st.doc, sl);
-    let shapes: Vec<Value> = sl.shapes.iter().map(|sh| shape_summary(ctx.as_ref(), sh, 0)).collect();
+    let mut shapes: Vec<Value> = sl.shapes.iter().map(|sh| shape_summary(ctx.as_ref(), sh, 0)).collect();
+    // an audio or video says which file it is, so a host can find its bytes without selecting the slide
+    for (v, sh) in shapes.iter_mut().zip(&sl.shapes) {
+        if let deckcraft_model::ShapeKind::Media(m) = &sh.kind
+            && let Some(item) = st.doc.media(m.media)
+            && let Some(o) = v.get_mut("media").and_then(Value::as_object_mut)
+        {
+            o.insert("name".into(), json!(item.name));
+            o.insert("contentType".into(), json!(item.content_type));
+            o.insert("bytes".into(), json!(item.data.len()));
+        }
+    }
     let bg = ctx.as_ref().map(|c| match resolve::background(c, Some(sl)) {
         (deckcraft_model::Fill::Solid { color }, ph) => json!(format!("#{}", c.color(&color, ph).hex())),
         (f, _) => serde_json::to_value(&f).ok().and_then(|v| v.get("kind").cloned()).unwrap_or_default(),
