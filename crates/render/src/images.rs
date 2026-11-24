@@ -117,6 +117,52 @@ fn duotone_rgb(a: &PictureAdjust) -> Option<(deckcraft_color::Rgba, deckcraft_co
     Some((rgb(d, deckcraft_color::Rgba::BLACK), rgb(l, deckcraft_color::Rgba::WHITE)))
 }
 
+/// Display copies a host made for pictures this build can't decode (TIFF and WebP without the
+/// `tiff-webp` feature), by the original's content. They are drawn and exported in place of the
+/// original, which stays in the file as it was.
+static DISPLAY: Mutex<Option<HashMap<u64, Arc<Vec<u8>>>>> = Mutex::new(None);
+
+fn content_key(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+/// Whether `bytes` are a picture this build can't decode itself (TIFF or WebP without `tiff-webp`).
+pub fn undecodable_format(bytes: &[u8]) -> bool {
+    !cfg!(feature = "tiff-webp") && matches!(image::guess_format(bytes), Ok(image::ImageFormat::Tiff | image::ImageFormat::WebP))
+}
+
+/// Registers `copy` (any format this build decodes, PNG say) to stand in for `original`, and
+/// forgets that the original failed to decode so it is drawn again.
+pub fn set_display_copy(original: &[u8], copy: Vec<u8>) {
+    let key = content_key(original);
+    DISPLAY.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(key, Arc::new(copy));
+    with(|c| {
+        c.bad.clear();
+        c.bad_order.clear();
+        c.bad_bytes = 0;
+    });
+}
+
+/// The display copy standing in for `bytes`, if they are undecodable here and a host gave one.
+pub fn display_copy(bytes: &[u8]) -> Option<Arc<Vec<u8>>> {
+    if !undecodable_format(bytes) {
+        return None;
+    }
+    let map = DISPLAY.lock().unwrap_or_else(|e| e.into_inner());
+    map.as_ref()?.get(&content_key(bytes)).cloned()
+}
+
+/// `bytes`, or their display copy when they can't be decoded here: what to decode.
+pub fn decodable(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match display_copy(bytes) {
+        Some(copy) => std::borrow::Cow::Owned(copy.to_vec()),
+        None => std::borrow::Cow::Borrowed(bytes),
+    }
+}
+
 /// Decode encoded bytes (PNG, JPEG, GIF, WebP, BMP, TIFF; WMF and EMF drawn at
 /// [`crate::metafile::DEFAULT_SIDE`]) to straight RGBA.
 pub fn decode(bytes: &[u8]) -> Option<image::RgbaImage> {
@@ -130,6 +176,9 @@ fn decode_at(bytes: &[u8], side: u32) -> Option<image::RgbaImage> {
     }
     if crate::metafile::is_metafile(bytes) {
         return crate::metafile::rasterize(bytes, side);
+    }
+    if let Some(copy) = display_copy(bytes) {
+        return decode_raster(&copy, MAX_RGBA);
     }
     decode_raster(bytes, MAX_RGBA)
 }
@@ -183,6 +232,9 @@ fn decode_raster(bytes: &[u8], max: u64) -> Option<image::RgbaImage> {
 pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     if crate::metafile::is_metafile(bytes) {
         return None;
+    }
+    if let Some(copy) = display_copy(bytes) {
+        return natural_size(&copy);
     }
     let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()?;
     if w == 0 || h == 0 {

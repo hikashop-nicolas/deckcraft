@@ -25,3 +25,8 @@ skrifa = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 vello_cpu = { workspace = true, features = ["multithreading"] }
+
+[features]
+default = ["tiff-webp"]
+# Decode TIFF and WebP pictures. Without it they are drawn from a display copy the host supplies (`set_display_copy`).
+tiff-webp = ["image/tiff", "image/webp"]

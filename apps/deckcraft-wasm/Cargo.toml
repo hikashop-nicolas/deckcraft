@@ -24,6 +24,8 @@ serde = { workspace = true }
 wasm-bindgen = "0.2"
 
 [features]
-default = ["video-posters"]
+default = ["video-posters", "picture-codecs"]
 # See deckcraft-engine's: off (--no-default-features), the host supplies poster frames and the module is about 1.2 MB smaller.
 video-posters = ["deckcraft-engine/video-posters"]
+# Off, TIFF and WebP pictures are drawn from PNG copies the host converts (about 0.9 MB smaller).
+picture-codecs = ["deckcraft-engine/picture-codecs"]

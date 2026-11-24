@@ -2,7 +2,7 @@
 //! requests the UI host carries out with its player ([`crate::UiRequest::Media`]); the host reports
 //! back through [`Session::media_status`], which `media.info` returns with the probe.
 
-use deckcraft_model::{MediaClip, ShapeId, ShapeKind};
+use deckcraft_model::{MediaClip, MediaId, ShapeId, ShapeKind};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, NO_ID_SPACE, bad, bool_param, cmd, edit_shapes, has_doc, targets};
@@ -34,6 +34,24 @@ pub fn specs() -> Vec<CommandSpec> {
             poster_frame
         ),
         cmd!(noundo "media.gifPlay", "Play/Pause GIF", [], None, "{id?, play?: bool (default: toggle)} → {id, playing}", has_doc, gif_play),
+        cmd!(
+            query "media.undecodable",
+            "Pictures to Convert",
+            [],
+            None,
+            "{} → [{media, name, contentType, data: base64}]: pictures this build can't decode (TIFF, WebP) and has no display copy for",
+            has_doc,
+            undecodable
+        ),
+        cmd!(
+            noundo "media.setDisplay",
+            "Set Display Copy",
+            [],
+            None,
+            "{media, data: base64 PNG or JPEG}: draw and export this copy in the picture's place; the file keeps the original",
+            has_doc,
+            set_display
+        ),
     ]
 }
 
@@ -169,6 +187,32 @@ fn poster_frame(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"id": id, "ms": ms}))
 }
 
+/// The pictures a host should convert: those this build can't decode and has no display copy for.
+fn undecodable(s: &mut Session, _p: &Value) -> Result<Value> {
+    let st = s.doc()?;
+    let list: Vec<Value> = st
+        .doc
+        .media
+        .iter()
+        .filter(|m| deckcraft_render::undecodable_format(&m.data) && deckcraft_render::display_copy(&m.data).is_none())
+        .map(|m| json!({"media": m.id, "name": m.name, "contentType": m.content_type, "data": super::base64_encode(&m.data)}))
+        .collect();
+    Ok(Value::Array(list))
+}
+
+/// A display copy the host converted for picture `media`: drawn and exported in its place; saving keeps the original.
+fn set_display(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "media.setDisplay";
+    let id: MediaId = p.get("media").cloned().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| bad(CMD, "missing `media`"))?;
+    let copy = p.get("data").and_then(Value::as_str).and_then(super::base64_decode).ok_or_else(|| bad(CMD, "missing or invalid base64 `data`"))?;
+    if deckcraft_render::undecodable_format(&copy) || deckcraft_render::decode_image(&copy).is_none() {
+        return Err(bad(CMD, "the copy must be a picture this build decodes (PNG or JPEG)"));
+    }
+    let original = s.doc()?.doc.media(id).map(|m| m.data.clone()).ok_or_else(|| bad(CMD, "no such media"))?;
+    deckcraft_render::set_display_copy(&original, copy);
+    Ok(json!({"media": id}))
+}
+
 /// Pause or play an animated GIF picture (`id` / `ids` / the selection, else the only one on the
 /// slide). The UI host keeps its clock: a paused GIF holds its frame and resumes from it.
 fn gif_play(s: &mut Session, p: &Value) -> Result<Value> {
@@ -294,6 +338,70 @@ mod tests {
         s.execute("media.posterFrame", &json!({"id": id, "poster": base64_encode(&second)})).expect("poster frame");
         assert_eq!(poster_of(&s, id), second);
         assert!(s.execute("media.posterFrame", &json!({"id": id, "poster": base64_encode(b"not a png")})).is_err());
+    }
+
+    /// A 2 × 2 uncompressed RGB TIFF, written by hand (the TIFF encoder may be left out of the build).
+    fn tiny_tiff() -> Vec<u8> {
+        let mut b = b"II*\0".to_vec();
+        b.extend_from_slice(&8u32.to_le_bytes());
+        let entries: [(u16, u16, u32, u32); 9] = [
+            (256, 3, 1, 2),
+            (257, 3, 1, 2),
+            (258, 3, 3, 122),
+            (259, 3, 1, 1),
+            (262, 3, 1, 2),
+            (273, 4, 1, 128),
+            (277, 3, 1, 3),
+            (278, 3, 1, 2),
+            (279, 4, 1, 12),
+        ];
+        b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (tag, kind, count, value) in entries {
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.extend_from_slice(&kind.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            b.extend_from_slice(&value.to_le_bytes());
+        }
+        b.extend_from_slice(&0u32.to_le_bytes()); // no next IFD (ends at 122)
+        for _ in 0..3 {
+            b.extend_from_slice(&8u16.to_le_bytes()); // bits per sample (122..128)
+        }
+        b.extend_from_slice(&[255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255]); // the strip (128..140)
+        b
+    }
+
+    /// Built without TIFF and WebP decoding, the engine lists such pictures for the host, draws a
+    /// converted copy in their place, and still saves the original bytes.
+    #[cfg(not(feature = "picture-codecs"))]
+    #[test]
+    fn a_picture_this_build_cant_decode_is_drawn_from_the_hosts_copy() {
+        let tiff = tiny_tiff();
+        let mut s = Session::with_new();
+        let _ = s.execute("slide.new", &json!({"layout": "blank"}));
+        // Inserted through the file path the host bypasses (it converts first), straight into the model.
+        let media = s.edit(|doc, _| Ok(doc.add_media("scan.tiff", "image/tiff", tiff.clone()).expect("media"))).expect("edit");
+        assert!(deckcraft_render::decode_image(&tiff).is_none());
+        let list = s.execute("media.undecodable", &json!({})).expect("list");
+        assert_eq!(list.as_array().map(Vec::len), Some(1));
+        assert_eq!(list[0]["name"], "scan.tiff");
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 255, 255])))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("png");
+        assert!(s.execute("media.setDisplay", &json!({"media": media, "data": base64_encode(b"nope")})).is_err());
+        s.execute("media.setDisplay", &json!({"media": media, "data": base64_encode(&png)})).expect("set");
+        assert_eq!(deckcraft_render::decode_image(&tiff).map(|i| i.dimensions()), Some((2, 2)));
+        assert_eq!(s.execute("media.undecodable", &json!({})).expect("list"), json!([]));
+        assert_eq!(s.doc().expect("doc").doc.media(media).expect("media").data.as_slice(), tiff.as_slice(), "the file keeps the TIFF");
+    }
+
+    /// With the decoders, the same TIFF needs nothing from the host.
+    #[cfg(feature = "picture-codecs")]
+    #[test]
+    fn a_full_build_decodes_tiff_itself() {
+        let tiff = tiny_tiff();
+        assert_eq!(deckcraft_render::decode_image(&tiff).map(|i| i.dimensions()), Some((2, 2)));
+        assert!(!deckcraft_render::undecodable_format(&tiff));
     }
 
     #[test]

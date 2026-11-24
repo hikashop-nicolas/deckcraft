@@ -142,12 +142,13 @@ fn remove_background(s: &mut Session, p: &Value) -> Result<Value> {
             let Some(sh) = st.shape(*id) else { continue };
             let ShapeKind::Picture { fill } = &sh.kind else { continue };
             let Some(item) = st.doc.media(fill.media) else { continue };
-            let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(item.data.as_slice())).with_guessed_format() else { continue };
+            let data = deckcraft_render::decodable_image(&item.data);
+            let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(&*data)).with_guessed_format() else { continue };
             let Ok((iw, ih)) = reader.into_dimensions() else { continue };
             if u64::from(iw) * u64::from(ih) > MAX_PIXELS {
                 return Err(bad("picture.removeBackground", format!("{iw}×{ih} pixels is too large; compress the picture first")));
             }
-            let Ok(dynimg) = image::load_from_memory(&item.data) else { continue };
+            let Ok(dynimg) = image::load_from_memory(&data) else { continue };
             let mut img = dynimg.to_rgba8();
             if matte(&mut img, tolerance) == 0 {
                 continue;
