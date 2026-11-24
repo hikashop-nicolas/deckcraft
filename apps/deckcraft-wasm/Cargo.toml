@@ -13,7 +13,7 @@ workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-deckcraft-engine = { workspace = true }
+deckcraft-engine = { path = "../../crates/engine", default-features = false }
 deckcraft-model = { workspace = true }
 deckcraft-render = { workspace = true }
 deckcraft-anim = { workspace = true }
@@ -22,3 +22,8 @@ deckcraft-text = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
 wasm-bindgen = "0.2"
+
+[features]
+default = ["video-posters"]
+# See deckcraft-engine's: off (--no-default-features), the host supplies poster frames and the module is about 1.2 MB smaller.
+video-posters = ["deckcraft-engine/video-posters"]

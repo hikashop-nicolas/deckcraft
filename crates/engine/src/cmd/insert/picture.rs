@@ -198,7 +198,11 @@ fn media(s: &mut Session, p: &Value, video: bool) -> Result<Value> {
     } else {
         None
     };
-    let poster_png = if video && decodable_video { crate::cmd::media::poster_png(&bytes, 0) } else { None };
+    let poster_png = match crate::cmd::media::host_poster(p, cmd)? {
+        Some(png) if video => Some(png),
+        _ if video && decodable_video => crate::cmd::media::poster_png(&bytes, 0),
+        _ => None,
+    };
     let size = s.doc()?.doc.slide_size;
     let rect = rect_param(p, "rect").unwrap_or_else(|| {
         if video {

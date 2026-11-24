@@ -29,7 +29,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Poster Frame",
             ["Video Format", "Adjust"],
             None,
-            "{id?, ms?: frame time (default: current position)}",
+            "{id?, ms?: frame time (default: current position), poster?: base64 PNG the host drew (instead of decoding)}",
             has_doc,
             poster_frame
         ),
@@ -120,6 +120,7 @@ fn info(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// A poster frame PNG for video bytes at `ms`.
+#[cfg(feature = "video-posters")]
 pub(crate) fn poster_png(bytes: &deckcraft_media::Bytes, ms: u64) -> Option<Vec<u8>> {
     match deckcraft_media::poster_png(bytes, ms as f64 / 1000.0) {
         Ok(png) => Some(png),
@@ -130,6 +131,22 @@ pub(crate) fn poster_png(bytes: &deckcraft_media::Bytes, ms: u64) -> Option<Vec<
     }
 }
 
+/// Built without the video decoders: the host passes poster frames (`poster`).
+#[cfg(not(feature = "video-posters"))]
+pub(crate) fn poster_png(_bytes: &deckcraft_media::Bytes, _ms: u64) -> Option<Vec<u8>> {
+    None
+}
+
+/// A poster frame the host drew itself, as base64 PNG in `poster`. `None` when absent; an error when not PNG.
+pub(crate) fn host_poster(p: &Value, cmd: &str) -> Result<Option<Vec<u8>>> {
+    let Some(b) = p.get("poster").and_then(Value::as_str) else { return Ok(None) };
+    let png = super::base64_decode(b).ok_or_else(|| bad(cmd, "invalid base64 `poster`"))?;
+    if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(bad(cmd, "`poster` must be a PNG"));
+    }
+    Ok(Some(png))
+}
+
 fn poster_frame(s: &mut Session, p: &Value) -> Result<Value> {
     let (id, m) = target(s, p, "media.posterFrame")?;
     if !m.video {
@@ -137,7 +154,10 @@ fn poster_frame(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let ms = ms_param(p, "ms").or_else(|| s.media_status.get(&id).map(|st: &MediaStatus| st.position_ms)).unwrap_or(0);
     let data = s.doc()?.doc.media(m.media).map(|i| i.data.clone()).ok_or_else(|| EngineError::Other("the media data is missing".into()))?;
-    let png = poster_png(&data, ms).ok_or_else(|| EngineError::Other("no frame could be decoded there".into()))?;
+    let png = match host_poster(p, "media.posterFrame")? {
+        Some(png) => png,
+        None => poster_png(&data, ms).ok_or_else(|| EngineError::Other("no frame could be decoded there".into()))?,
+    };
     let name = format!("poster{id}.png");
     let poster = s.edit(|doc, _| doc.add_media(&name, "image/png", png).ok_or_else(|| bad("media.posterFrame", NO_ID_SPACE)))?;
     edit_shapes(s, &json!({"id": id}), "media.posterFrame", |sh| {
@@ -245,6 +265,35 @@ mod tests {
         for key in ["durationMs", "width", "height"] {
             assert_eq!(after[key], before[key], "{key}");
         }
+    }
+
+    /// A host that draws its own poster frames (a web module built without video decoders) passes them
+    /// as `poster`; the engine keeps those bytes, with or without its own decoders.
+    #[test]
+    fn a_poster_from_the_host_is_kept_as_given() {
+        let png = |c: u8| {
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(4, 3, image::Rgba([c, 0, 0, 255])))
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .expect("png");
+            out
+        };
+        let poster_of = |s: &Session, id: u64| {
+            let st = s.doc().expect("doc");
+            let Some(deckcraft_model::ShapeKind::Media(m)) = st.shape(ShapeId(id as u32)).map(|sh| &sh.kind) else { panic!("media") };
+            st.doc.media(m.poster.expect("poster")).expect("poster media").data.to_vec()
+        };
+        let mut s = Session::with_new();
+        let clip = include_bytes!("../../../media/tests/fixtures/clip-h264.mp4");
+        let first = png(10);
+        let r =
+            s.execute("insert.video", &json!({"name": "clip.mp4", "data": base64_encode(clip), "poster": base64_encode(&first)})).expect("insert");
+        let id = r["id"].as_u64().expect("id");
+        assert_eq!(poster_of(&s, id), first);
+        let second = png(200);
+        s.execute("media.posterFrame", &json!({"id": id, "poster": base64_encode(&second)})).expect("poster frame");
+        assert_eq!(poster_of(&s, id), second);
+        assert!(s.execute("media.posterFrame", &json!({"id": id, "poster": base64_encode(b"not a png")})).is_err());
     }
 
     #[test]

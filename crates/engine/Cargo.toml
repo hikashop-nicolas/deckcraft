@@ -35,3 +35,8 @@ zip = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 
+[features]
+default = ["video-posters"]
+# Decode a video's poster frame in the engine (H.264, HEVC, VP9, AV1). Without it the host passes the frame as `poster`
+# (a web host draws it from a <video>), and the video decoders stay out of the build.
+video-posters = []

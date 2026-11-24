@@ -90,7 +90,15 @@ pub fn specs() -> Vec<CommandSpec> {
             chart
         ),
         cmd!("insert.audio", "Audio from File…", ["Insert", "Media", "Audio"], None, "{path? | data: base64, name?, rect?}", has_slide, audio),
-        cmd!("insert.video", "Video from File…", ["Insert", "Media", "Video"], None, "{path? | data: base64, name?, rect?}", has_slide, video),
+        cmd!(
+            "insert.video",
+            "Video from File…",
+            ["Insert", "Media", "Video"],
+            None,
+            "{path? | data: base64, name?, rect?, poster?: base64 PNG of a frame}",
+            has_slide,
+            video
+        ),
         cmd!("insert.wordArt", "WordArt", ["Insert", "Text"], None, "{text?, style?: 0..}", has_slide, word_art),
         cmd!("insert.slideNumber", "Slide Number", ["Insert", "Text"], None, "{}", has_slide, slide_number),
         cmd!(
