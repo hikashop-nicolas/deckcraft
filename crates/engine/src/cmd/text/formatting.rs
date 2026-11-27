@@ -81,6 +81,9 @@ fn format_shape(
                 }
             }
         }
+        // A picture, chart or media clip holds no text of its own.
+        ShapeKind::Picture { .. } | ShapeKind::Chart(_) | ShapeKind::Media(_) | ShapeKind::Model3d { .. } | ShapeKind::Opaque { .. }
+            if sh.text.is_none() => {}
         _ => {
             let ob = before.and_then(|b| b.text.as_ref());
             let body = sh.text.get_or_insert_with(TextBody::default);
