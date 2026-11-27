@@ -5,22 +5,17 @@ use super::*;
 /// selected shapes). A caret without a range formats the word it's in (PowerPoint behaviour),
 /// or sets the formatting for what is typed next at a word boundary.
 pub(crate) fn format_run(s: &mut Session, f: &(dyn Fn(&mut RunProps) + Send + Sync)) -> Result<Value> {
+    format_run_with(s, &|r, _| f(r))
+}
+
+/// [`format_run`] whose setter also gets each run's effective props (inherited values resolved).
+/// While editing that is the props at the selection.
+pub(crate) fn format_run_with(s: &mut Session, f: &(dyn Fn(&mut RunProps, &RunProps) + Send + Sync)) -> Result<Value> {
     let st = s.doc()?;
     if let Some(t) = st.selection.text.clone() {
         let (a, b) = format_range(st, &t);
-        let collapsed = a == b;
-        edit_text(s, |body, _| {
-            if collapsed {
-                // Next typed text: put the props on an empty paragraph's end mark or keep pending.
-                ed::format(body, a, b, f);
-            } else {
-                ed::format(body, a, b, f);
-            }
-        })?;
-        if collapsed {
-            // Remember as pending typing props by inserting nothing: handled via end mark for
-            // empty paragraphs; mid-paragraph carets keep surrounding formatting.
-        }
+        let shown = crate::cmd::format::selection_run(s);
+        edit_text(s, |body, _| ed::format(body, a, b, &|r| f(r, &shown)))?;
         return ok();
     }
     let ids = st.selection.shapes.clone();
@@ -28,31 +23,101 @@ pub(crate) fn format_run(s: &mut Session, f: &(dyn Fn(&mut RunProps) + Send + Sy
         return Err(bad("format", SELECT_TEXT_OR_SHAPE));
     }
     let cells = st.selection.cells;
+    // The text as it was, to resolve inherited props against.
+    let old = st.doc.clone();
+    let sel = st.selection.clone();
+    let ctx = ctx_for(&old, &sel);
+    let shapes = crate::cmd::current_shapes(&old, &sel);
     edit_shapes(s, &json!({"ids": ids}), "format", |sh| {
-        let id = sh.id;
-        match &mut sh.kind {
-            ShapeKind::Table(t) => {
-                // Only the selected cells, when a range of them is selected.
-                let range = crate::cmd::table::selected_range(cells, id, t);
-                for (r, row) in t.rows.iter_mut().enumerate() {
-                    for (c, cell) in row.cells.iter_mut().enumerate() {
-                        if crate::cmd::table::in_range(range, r, c) {
-                            ed::format_all(&mut cell.text, f);
-                        }
-                    }
-                }
-            }
-            _ => {
-                let body = sh.text.get_or_insert_with(TextBody::default);
-                ed::format_all(body, f);
-            }
-        }
+        let before = shapes.and_then(|v| deckcraft_model::find_shape(v, sh.id));
+        format_shape(sh, before, ctx.as_ref(), cells, f, 0);
         Ok(())
     })?;
     for id in ids {
         fit_text_box(s, id)?;
     }
     ok()
+}
+
+/// Every text of a selected shape: its runs, end marks and own list style; a table's selected
+/// cells; a group's members (their own text only).
+fn format_shape(
+    sh: &mut Shape,
+    before: Option<&Shape>,
+    ctx: Option<&Ctx>,
+    cells: Option<(ShapeId, (usize, usize), (usize, usize))>,
+    f: &dyn Fn(&mut RunProps, &RunProps),
+    depth: usize,
+) {
+    let id = sh.id;
+    match &mut sh.kind {
+        ShapeKind::Table(t) => {
+            let range = crate::cmd::table::selected_range(cells, id, t);
+            let old = match before.map(|b| &b.kind) {
+                Some(ShapeKind::Table(o)) => Some(o),
+                _ => None,
+            };
+            for (r, row) in t.rows.iter_mut().enumerate() {
+                for (c, cell) in row.cells.iter_mut().enumerate() {
+                    if crate::cmd::table::in_range(range, r, c) {
+                        let ob = old.and_then(|o| o.rows.get(r)).and_then(|row| row.cells.get(c)).map(|c| &c.text);
+                        format_body_all(&mut cell.text, ob, before, ctx, f);
+                    }
+                }
+            }
+        }
+        ShapeKind::Group { children, .. } => {
+            if depth > 64 {
+                return;
+            }
+            let old = match before.map(|b| &b.kind) {
+                Some(ShapeKind::Group { children, .. }) => Some(children),
+                _ => None,
+            };
+            for (i, child) in children.iter_mut().enumerate() {
+                let ob = old.and_then(|o| o.get(i));
+                if child.text.is_some() || matches!(child.kind, ShapeKind::Group { .. } | ShapeKind::Table(_)) {
+                    format_shape(child, ob, ctx, None, f, depth + 1);
+                }
+            }
+        }
+        _ => {
+            let ob = before.and_then(|b| b.text.as_ref());
+            let body = sh.text.get_or_insert_with(TextBody::default);
+            // An empty placeholder keeps the formatting on an end mark, for the text typed in it.
+            if body.paragraphs.is_empty() {
+                body.paragraphs.push(Paragraph::default());
+            }
+            format_body_all(body, ob, before, ctx, f);
+        }
+    }
+}
+
+/// [`ed::format_all`] with each run's effective props, plus the body's own list style levels.
+fn format_body_all(body: &mut TextBody, before: Option<&TextBody>, shape: Option<&Shape>, ctx: Option<&Ctx>, f: &dyn Fn(&mut RunProps, &RunProps)) {
+    let blank = Paragraph::default();
+    let shown = |pi: usize, r: Option<&RunProps>, end: bool| -> RunProps {
+        let para = before.and_then(|b| b.paragraphs.get(pi)).unwrap_or(&blank);
+        let own = r.cloned().unwrap_or_else(|| if end { para.end_props.clone() } else { RunProps::default() });
+        match (ctx, shape) {
+            (Some(c), Some(sh)) => resolve::run(c, sh, para, &own),
+            _ => own,
+        }
+    };
+    for (pi, p) in body.paragraphs.iter_mut().enumerate() {
+        let old = before.and_then(|b| b.paragraphs.get(pi));
+        for (ri, r) in p.runs.iter_mut().enumerate() {
+            let res = shown(pi, old.and_then(|o| o.runs.get(ri)).map(|x| &x.props), false);
+            f(&mut r.props, &res);
+        }
+        let res = shown(pi, None, true);
+        f(&mut p.end_props, &res);
+        p.normalize();
+    }
+    for lv in body.list_style.levels.iter_mut().flatten() {
+        let own = lv.run.clone();
+        f(&mut lv.run, &own);
+    }
 }
 
 /// What `format_run` formats while editing: the selection, or for a bare caret the word it's in

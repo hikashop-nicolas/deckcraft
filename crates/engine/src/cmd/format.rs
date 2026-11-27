@@ -8,7 +8,7 @@ use deckcraft_model::{ColorRef, ColorTransform, Effects, Fill, Line, SchemeSlot,
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-use super::text::{format_body, format_para, format_run};
+use super::text::{format_body, format_para, format_run, format_run_with};
 use super::{
     CommandSpec, always, bad, base64_decode, bool_or, bool_param, cmd, color_param, edit_shapes, f64_or, f64_param, has_doc, has_text,
     has_text_or_shapes, ids_param, ok, str_param,
@@ -275,9 +275,10 @@ fn current_run(s: &Session) -> RunProps {
             (st.shape(t.shape).cloned().unwrap_or_default(), para, rp)
         }
         None => {
-            let Some(sh) = st.selected_shapes().first().map(|x| (*x).clone()) else { return RunProps::default() };
+            let Some(sh) = st.selected_shapes().first().map(|x| first_text_shape(x).clone()) else { return RunProps::default() };
             let para = sh.text.as_ref().and_then(|t| t.paragraphs.first().cloned()).unwrap_or_default();
-            let rp = para.runs.first().map(|r| r.props.clone()).unwrap_or_default();
+            // The first run with text, else the end mark (an empty shape's formatting).
+            let rp = para.runs.iter().find(|r| !r.text.is_empty()).map(|r| r.props.clone()).unwrap_or_else(|| para.end_props.clone());
             (sh, para, rp)
         }
     };
@@ -285,6 +286,22 @@ fn current_run(s: &Session) -> RunProps {
         Some(c) => resolve::run(&c, &shape, &para, &run),
         None => run,
     }
+}
+
+/// The effective run props at the selection, for setters that start from what is shown.
+pub(crate) fn selection_run(s: &Session) -> RunProps {
+    current_run(s)
+}
+
+/// A group's first member with text (depth first), else the shape itself.
+fn first_text_shape(sh: &Shape) -> &Shape {
+    fn find(sh: &Shape, depth: usize) -> Option<&Shape> {
+        match &sh.kind {
+            ShapeKind::Group { children, .. } if depth < 64 => children.iter().find_map(|c| find(c, depth + 1)),
+            _ => sh.text.as_ref().is_some_and(|t| t.paragraphs.iter().any(|p| !p.text().is_empty())).then_some(sh),
+        }
+    }
+    find(sh, 0).unwrap_or(sh)
 }
 
 fn current_para(s: &Session) -> ParaProps {
@@ -310,6 +327,10 @@ fn current_para(s: &Session) -> ParaProps {
 #[cfg(test)]
 #[path = "ruler_tests.rs"]
 mod ruler_tests;
+
+#[cfg(test)]
+#[path = "format/shape_tests.rs"]
+mod shape_tests;
 
 #[cfg(test)]
 mod tests {

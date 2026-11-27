@@ -64,13 +64,9 @@ fn step(cur: f64, up: bool) -> f64 {
 }
 
 fn grow_shrink(s: &mut Session, up: bool) -> Result<Value> {
-    // Each run steps from its own size, like PowerPoint.
-    let st = s.doc()?;
-    let ctx_sizes = current_run(s).size.unwrap_or(18.0);
-    let _ = st;
-    let base = ctx_sizes;
-    format_run(s, &move |r| {
-        let cur = r.size.unwrap_or(base);
+    // Each run steps from its own size, inherited sizes included, like PowerPoint.
+    format_run_with(s, &move |r, shown| {
+        let cur = r.size.or(shown.size).unwrap_or(18.0);
         r.size = Some(step(cur, up));
     })
 }
