@@ -16,12 +16,14 @@ use super::{
 use crate::{Result, Session};
 use deckcraft_model::ShapeId;
 
+mod embed;
 mod font;
 mod painter;
 mod paragraph;
 mod ruler;
 mod text_effects;
 
+use embed::{font_embed, font_embedded, font_unembed};
 pub use font::SIZES;
 use font::{
     bold, caps, clear, color, font, font_dialog, grow, highlight, italic, language, language_all, shrink, size, spacing, strike, subscript,
@@ -39,6 +41,17 @@ use text_effects::{case, text_outline, text_shadow, text_warp};
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!(noundo "font.add", "Add Font", [], None, "{data: base64 TTF/OTF/TTC} → {faces} added for this session", always, font_add),
+        cmd!(
+            "font.embed",
+            "Embed Font",
+            ["File", "Options"],
+            None,
+            "{family, regular?, bold?, italic?, boldItalic?: base64 TTF/OTF/TTC, regularIndex?, boldIndex?, italicIndex?, boldItalicIndex?: face in a collection} → {family, faces, skipped: [{face, reason: restricted|previewPrint|bitmapOnly|notAFont|tooLarge}]}; stored as Embedded OpenType parts, replacing those slots",
+            has_doc,
+            font_embed
+        ),
+        cmd!("font.unembed", "Remove Embedded Font", ["File", "Options"], None, "{family} → {removed}", has_doc, font_unembed),
+        cmd!(query "font.embedded", "Embedded Fonts", [], None, "{} → [{family, faces, drawable}]", has_doc, font_embedded),
         cmd!(noundo "font.rescan", "Rescan Installed Fonts", ["Home", "Font"], None, "{} → {faces, families} (fonts installed since start-up)", always, font_rescan),
         cmd!("format.bold", "Bold", ["Home", "Font"], Some("Cmd+B"), "{on?: bool}", has_text_or_shapes, bold),
         cmd!("format.italic", "Italic", ["Home", "Font"], Some("Cmd+I"), "{on?: bool}", has_text_or_shapes, italic),
@@ -331,6 +344,10 @@ mod ruler_tests;
 #[cfg(test)]
 #[path = "format/shape_tests.rs"]
 mod shape_tests;
+
+#[cfg(test)]
+#[path = "format/embed_tests.rs"]
+mod embed_tests;
 
 #[cfg(test)]
 mod tests {

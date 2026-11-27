@@ -8,11 +8,13 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod eot;
 mod fallback;
 mod fontdb;
 pub mod script;
 mod shape;
 
+pub use eot::{EmbedError, Embedding, embedding_of, eot_wrap, font_fs_type, single_font};
 pub use fallback::{bundled_families, covers_cluster, is_emoji_cluster, ligature_carets};
 pub use fontdb::{
     FALLBACK_FAMILY, FaceRef, FontDb, FontFace, LAST_RESORT_FAMILY, MISSING_FONT_FAMILY, base_style, bundled, substitutes, system_font_dirs,
